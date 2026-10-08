@@ -70,7 +70,10 @@ def _load_methods(*names: str) -> dict[str, Any]:
         "_single_line": lambda value, limit=240: " ".join(str(value or "").split())[:limit],
         "_now_ts": lambda: 1_786_291_200.0,
         "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
-        "logger": types.SimpleNamespace(warning=lambda *_args, **_kwargs: None),
+        "logger": types.SimpleNamespace(
+            warning=lambda *_args, **_kwargs: None,
+            error=lambda *_args, **_kwargs: None,
+        ),
     }
     exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)
     return {name: namespace[name] for name in names}
@@ -83,6 +86,7 @@ METHODS = _load_methods(
     "_req041_legacy_relationship_state",
     "_req041_resolve_legacy_pending_for_person",
     "_req041_schedule_replay",
+    "_req041_projection_snapshot",
     "_req041_legacy_snapshots_locked",
     "_req041_sync_scoped_now",
     "_req041_rebind_memory_scope_if_available",
@@ -106,6 +110,7 @@ class Harness:
     _req041_legacy_relationship_state = METHODS["_req041_legacy_relationship_state"]
     _req041_resolve_legacy_pending_for_person = METHODS["_req041_resolve_legacy_pending_for_person"]
     _req041_schedule_replay = METHODS["_req041_schedule_replay"]
+    _req041_projection_snapshot = METHODS["_req041_projection_snapshot"]
     _req041_legacy_snapshots_locked = METHODS["_req041_legacy_snapshots_locked"]
     _req041_sync_scoped_now = METHODS["_req041_sync_scoped_now"]
     _req041_rebind_memory_scope_if_available = METHODS["_req041_rebind_memory_scope_if_available"]
@@ -192,6 +197,40 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
             migration_epoch=status["migration_epoch"], policy_version=status["policy_version"],
         )
         return remote
+
+    def test_projection_snapshot_copies_only_projection_fields(self) -> None:
+        """Rebuilds must not deep-copy store fields the projection never reads."""
+        host = Harness()
+        host._req041_projection_snapshot = types.MethodType(
+            METHODS["_req041_projection_snapshot"], host
+        )
+        host.data = {
+            "users": {"u1": {"name": "a"}},
+            "groups": {"g1": {"members": {}}},
+            "unified_person": {"profiles": {}},
+            "window_snapshots": {"huge": ["x"] * 1000},
+            "token_usage": {"big": "y" * 1000},
+            "bot_personal_outbox": {"big": "z" * 1000},
+            "_req041_persona_reset_saga": {"state": "confirmed"},
+        }
+        snapshot = host._req041_projection_snapshot(host.data)
+
+        for key in ("users", "groups", "unified_person", "_req041_persona_reset_saga"):
+            self.assertIn(key, snapshot)
+        for key in ("window_snapshots", "token_usage", "bot_personal_outbox"):
+            self.assertNotIn(key, snapshot)
+        # The copy must be independent of the live store.
+        snapshot["users"]["u1"]["name"] = "mutated"
+        self.assertEqual("a", host.data["users"]["u1"]["name"])
+
+    def test_projection_snapshot_keeps_unknown_req041_markers(self) -> None:
+        host = Harness()
+        host._req041_projection_snapshot = types.MethodType(
+            METHODS["_req041_projection_snapshot"], host
+        )
+        host.data = {"users": {}, "_req041_future_marker": {"v": 1}}
+        snapshot = host._req041_projection_snapshot(host.data)
+        self.assertEqual({"v": 1}, snapshot["_req041_future_marker"])
 
     async def test_new_install_without_source_initializes_stable_scoped_runtime(self) -> None:
         host = self._host(source=False)

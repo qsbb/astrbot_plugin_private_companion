@@ -6377,20 +6377,47 @@ class PrivateCompanionPlugin(
         except RuntimeError:
             raise RuntimeError("migration_replay_loop_unavailable")
 
+    def _req041_projection_snapshot(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Deep-copy only the legacy fields the scoped projection actually reads.
+
+        This used to copy the entire store, which on a production profile is
+        ~30 MB of JSON and costs ~0.35 s per snapshot on every rebuild.
+        ``build_records`` only consumes the keys listed below plus any
+        ``_req041_`` migration marker, so projecting first keeps behaviour
+        identical while cutting the copied bytes to roughly a quarter.
+        """
+        projection_keys = (
+            "_req041_group_reset_sagas",
+            "_req041_persona_expression_profile",
+            "_req041_persona_reset_saga",
+            "groups",
+            "unified_person",
+            "users",
+        )
+        projected: dict[str, Any] = {}
+        for key in projection_keys:
+            if key in data:
+                projected[key] = data[key]
+        for key, value in data.items():
+            if key.startswith("_req041_") and key not in projected:
+                projected[key] = value
+        return deepcopy(projected)
+
     def _req041_legacy_snapshots_locked(self) -> list[tuple[str, dict[str, Any]]]:
         snapshots: list[tuple[str, dict[str, Any]]] = []
         default_data = getattr(self, "_data_default", None)
         if not isinstance(default_data, dict):
             default_data = self.data if isinstance(getattr(self, "data", None), dict) else {}
-        snapshots.append(("default", deepcopy(default_data)))
+        snapshots.append(("default", self._req041_projection_snapshot(default_data)))
         profiles = getattr(self, "_persona_data_profiles", {})
         if isinstance(profiles, dict):
             for persona_id, profile_data in profiles.items():
                 if not isinstance(profile_data, dict):
                     continue
                 scope_hash = hashlib.sha256(str(persona_id).encode("utf-8")).hexdigest()[:24]
-                snapshots.append((f"persona:{scope_hash}", deepcopy(profile_data)))
+                snapshots.append((f"persona:{scope_hash}", self._req041_projection_snapshot(profile_data)))
         return snapshots
+
 
     async def _req041_sync_scoped_now(self) -> dict[str, Any]:
         synchronizer = getattr(self, "req041_scoped_projection_sync", None)
@@ -6512,7 +6539,14 @@ class PrivateCompanionPlugin(
             return scoped_result
 
     async def _req041_run_memory_scope_rebind(self) -> None:
-        """Retry late memory binding until the scoped runtime becomes usable."""
+        """Retry late memory binding until the scoped runtime becomes usable.
+
+        Rebuilding the scoped projection is expensive (a full snapshot copy plus a
+        per-scope quota sweep). A permanent contract-level rejection must therefore
+        not turn this into a tight forever-loop: back off geometrically and stop
+        retrying once failures persist, while keeping fast recovery for a genuinely
+        transient outage. Memory writes stay fail-closed either way.
+        """
         stop_event = getattr(self, "_stop_event", None)
         startup_tasks = getattr(self, "_startup_background_tasks", {})
         migration_task = startup_tasks.get("req041_automatic_migration") if isinstance(startup_tasks, dict) else None
@@ -6521,6 +6555,13 @@ class PrivateCompanionPlugin(
                 await asyncio.shield(migration_task)
             except Exception:
                 pass
+        base_delay = 2.0
+        max_delay = 600.0
+        give_up_after = 8
+        not_ready_limit = 150
+        delay = base_delay
+        failures = 0
+        not_ready = 0
         while True:
             if isinstance(stop_event, asyncio.Event) and stop_event.is_set():
                 return
@@ -6529,19 +6570,39 @@ class PrivateCompanionPlugin(
                 return
             status = getattr(self, "req041_migration_status", None)
             if not isinstance(status, dict):
-                await asyncio.sleep(2.0)
+                # Migration finished but has not published its status yet. This is
+                # a startup wait, not a failure: poll at the base interval.
+                not_ready += 1
+                if not_ready >= not_ready_limit:
+                    logger.error(
+                        "[PrivateCompanion] 等待迁移状态超时(%s 次)，已停止记忆作用域补绑定重试",
+                        not_ready,
+                    )
+                    return
+                await asyncio.sleep(base_delay)
                 continue
+            not_ready = 0
             try:
                 result = await self._req041_rebind_memory_scope_if_available()
             except Exception as exc:
+                failures += 1
                 logger.warning(
-                    "[PrivateCompanion] 记忆作用域补绑定暂未完成，将重试: %s",
-                    _single_line(exc, 160),
-                    exc_info=True,
+                    "[PrivateCompanion] 记忆作用域补绑定暂未完成，%.0fs 后重试(第%s次): %s",
+                    delay, failures, _single_line(exc, 160),
                 )
-                await asyncio.sleep(2.0)
+                if failures >= give_up_after:
+                    logger.error(
+                        "[PrivateCompanion] 记忆作用域补绑定连续失败 %s 次，已暂停后台重试以避免空转; "
+                        "记忆写入保持 fail-closed，重启或修复后可恢复",
+                        failures,
+                    )
+                    return
+                await asyncio.sleep(delay)
+                delay = min(delay * 2.0, max_delay)
                 continue
             if result.get("ok"):
+                failures = 0
+                delay = base_delay
                 status = getattr(self, "req041_migration_status", None)
                 if isinstance(status, dict):
                     status.update({"memory_bound": True, "scoped": result})
@@ -6559,7 +6620,21 @@ class PrivateCompanionPlugin(
                     return
                 elif status is None:
                     return
-            await asyncio.sleep(2.0)
+            failures += 1
+            code = _single_line(result.get("code"), 120) if isinstance(result, dict) else ""
+            logger.warning(
+                "[PrivateCompanion] 记忆作用域补绑定未成功(%s)，%.0fs 后重试(第%s次)",
+                code or "unknown", delay, failures,
+            )
+            if failures >= give_up_after:
+                logger.error(
+                    "[PrivateCompanion] 记忆作用域补绑定连续失败 %s 次，已暂停后台重试以避免空转; "
+                    "记忆写入保持 fail-closed，重启或修复后可恢复",
+                    failures,
+                )
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2.0, max_delay)
 
     async def _req041_run_scoped_sync(self) -> None:
         while bool(getattr(self, "_req041_scoped_sync_requested", False)):
