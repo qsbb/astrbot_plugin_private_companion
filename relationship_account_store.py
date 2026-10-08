@@ -26,6 +26,7 @@ try:
         apply_relationship_event,
         normalize_relationship_mode,
         normalize_relationship_positive_stage_cap_key,
+        normalize_relationship_reason,
     )
     from .relationship_policy import relationship_stage_for_score
     from .relationship_event_policy import validate_group_interaction_proof
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover - direct-module test compatibility
         apply_relationship_event,
         normalize_relationship_mode,
         normalize_relationship_positive_stage_cap_key,
+        normalize_relationship_reason,
     )
     from relationship_policy import relationship_stage_for_score
     from relationship_event_policy import validate_group_interaction_proof
@@ -638,7 +640,7 @@ class RelationshipAccountStore:
         """Replay one proven legacy result with strict before/after preconditions."""
         context = self._authorize(context, "relationship_write")
         event = _token(event_id)
-        reason = _token(reason_code, limit=80).lower()
+        reason = normalize_relationship_reason(_token(reason_code, limit=80).lower())
         requested, applied = _integer(requested_delta), _integer(applied_delta)
         before, after = _integer(score_before), _integer(score_after)
         role = _token(relationship_role, limit=20).lower()

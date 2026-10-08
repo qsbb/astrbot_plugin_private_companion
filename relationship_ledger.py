@@ -326,7 +326,7 @@ def apply_relationship_event(
         totals["negative"] = _bounded_int(totals.get("negative"), 0, -120, 0) + applied
     entry = {
         "event_key": dedupe_key,
-        "reason_code": reason,
+        "reason_code": canonical_reason,
         "delta": applied,
         "score_before": before,
         "score_after": after,
@@ -646,6 +646,19 @@ def _reason(value: Any) -> str:
     return "".join(ch for ch in text if ch.isalnum() or ch in {"_", "-"})[:48]
 
 
+def normalize_relationship_reason(value: Any) -> str:
+    """Canonicalize a relationship reason code.
+
+    Fast-path call sites (``message_pipeline``) emit short aliases such as
+    ``fast_inbound`` while the durable contract only accepts the canonical
+    names (``inbound``). Every write and every replay precondition must agree
+    on the canonical value, otherwise ledger entries can no longer be replayed
+    and the REQ-041 migration stalls permanently.
+    """
+    reason = _reason(value)
+    return _EVENT_REASON_ALIASES.get(reason, reason)
+
+
 def _score(value: Any) -> int:
     parsed = _integer(value)
     return max(RELATIONSHIP_SCORE_MIN, min(RELATIONSHIP_SCORE_MAX, parsed if parsed is not None else 0))
@@ -706,6 +719,7 @@ __all__ = [
     "migrate_relationship_score_schema",
     "migrate_relationship_positive_stage_cap",
     "normalize_relationship_mode",
+    "normalize_relationship_reason",
     "normalize_relationship_positive_stage_cap_key",
     "record_manual_relationship_change",
     "relationship_positive_score_cap",

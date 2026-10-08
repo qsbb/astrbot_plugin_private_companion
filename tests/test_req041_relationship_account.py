@@ -367,6 +367,53 @@ class RelationshipAccountStoreTests(unittest.TestCase):
                     account["relationship_ledger"][-1]["reason_code"],
                 )
 
+    def test_legacy_event_replay_accepts_fast_path_reason_aliases(self) -> None:
+        """Fast-path aliases must replay: otherwise the REQ-041 queue stalls.
+
+        message_pipeline emits ``fast_inbound`` / ``fast_interaction_warmth``
+        while the durable contract only lists the canonical names. A ledger
+        entry written with the alias used to fail every replay attempt with
+        ``relationship_legacy_event_invalid`` and pause the migration forever.
+        """
+        aliases = {
+            "fast_inbound": "inbound",
+            "fast_proactive_reply": "proactive_reply",
+            "fast_interaction_warmth": "interaction_warmth",
+        }
+        for index, (alias, canonical) in enumerate(aliases.items(), start=1):
+            with self.subTest(alias=alias):
+                store = RelationshipAccountStore(
+                    self.path.parent / f"relationship-alias-{index}.db",
+                    active_migration_epoch=EPOCH,
+                    clock=lambda: 1_700_000_000.0,
+                )
+                store.create_account(
+                    _context(),
+                    operation_id=f"create-alias-{index}",
+                    actor="administrator",
+                    relationship_role="friend",
+                    score=10,
+                )
+                store.replay_legacy_event(
+                    _context(),
+                    event_id=f"legacy-alias-{index}",
+                    reason_code=alias,
+                    requested_delta=1,
+                    applied_delta=1,
+                    score_before=10,
+                    score_after=11,
+                    relationship_role="friend",
+                    relationship_mode="normal",
+                    positive_stage_cap_key="close",
+                    daily_totals={"day": "2026-08-17", "positive": 1, "negative": 0},
+                    last_effective_at=1_700_000_000,
+                )
+                account = store.account(_context())
+                self.assertEqual(
+                    canonical,
+                    account["relationship_ledger"][-1]["reason_code"],
+                )
+
     def test_legacy_event_replay_still_rejects_unknown_reason(self) -> None:
         self._create(score=10)
         with self.assertRaisesRegex(RelationshipStoreError, "relationship_legacy_event_invalid"):

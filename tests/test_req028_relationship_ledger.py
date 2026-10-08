@@ -93,3 +93,25 @@ def test_high_relationship_stages_have_diminishing_positive_gain() -> None:
     assert low_result["delta"] == 4
     assert close_result["delta"] == 3
     assert intimate_result["delta"] == 2
+
+
+def test_ledger_persists_canonical_reason_for_fast_path_alias() -> None:
+    """The ledger must store the canonical reason, not the pipeline alias.
+
+    Only the canonical names are replayable; persisting ``fast_inbound`` made
+    the REQ-041 replay reject the entry and pause the migration for good.
+    """
+    user = {"relationship_role": "friend", "relationship_score": 10}
+    result = apply_relationship_event(user, 1, reason_code="fast_inbound", now=_ts(2))
+    assert result["changed"] is True
+    assert user["relationship_ledger"][-1]["reason_code"] == "inbound"
+
+
+def test_ledger_alias_and_canonical_reason_share_one_dedupe_key() -> None:
+    """An alias and its canonical form must dedupe against the same event."""
+    user = {"relationship_role": "friend", "relationship_score": 10}
+    first = apply_relationship_event(user, 1, reason_code="inbound", now=_ts(3))
+    second = apply_relationship_event(user, 1, reason_code="fast_inbound", now=_ts(3))
+    assert first["changed"] is True
+    assert second["changed"] is False
+    assert second["code"] == "duplicate_event"
