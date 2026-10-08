@@ -217,6 +217,48 @@ class MigrationReplayTests(unittest.TestCase):
         self.assertTrue(account["legacy_snapshot"])
         self.assertEqual(1, account["revision"])
 
+    def test_event_arriving_before_any_snapshot_bootstraps_the_account(self) -> None:
+        """A legacy event may precede its snapshot; it must still replay.
+
+        The legacy ledger was written incrementally, so an event can reach the
+        outbox while no account exists yet. The payload carries the complete
+        "before" state, so the worker bootstraps the account from it and then
+        replays the event instead of pausing the epoch forever with
+        ``relationship_account_missing``.
+        """
+        # Drop the account seeded by setUp to reproduce the real ordering.
+        self.relationships = RelationshipAccountStore(
+            self.data_dir / "relationships-empty.db",
+            active_migration_epoch=self.epoch,
+            clock=lambda: 1_786_291_200.0,
+        )
+        producer = MigrationDualWriteProducer(
+            outbox=self.outbox, coordinator=self.coordinator,
+            migration_epoch=self.epoch, policy_version=POLICY,
+        )
+        producer.emit_relationship(
+            registry=self.registry, user=self._user(), requested_delta=2,
+            reason_code="fast_inbound", source_revision=1,
+            result={
+                "changed": True, "delta": 2,
+                "entry": {"event_key": "b" * 24, "score_before": 10, "score_after": 12},
+            },
+        )
+        worker = MigrationReplayWorker(
+            outbox=self.outbox, coordinator=self.coordinator,
+            relationship_store=self.relationships, registry=self.registry,
+            migration_epoch=self.epoch, policy_version=POLICY,
+        )
+
+        result = worker.run_batch()
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(1, result["count"])
+        account = self.relationships.account(self.context)
+        self.assertEqual(12, account["relationship_score"])
+        # The alias must also be canonicalized in the account ledger.
+        self.assertEqual("inbound", account["relationship_ledger"][-1]["reason_code"])
+
     def test_bad_event_proof_pauses_epoch_without_changing_target(self) -> None:
         self.outbox.enqueue_next(
             stream_key=f"relationship:{self.person_id}", event_id="bad-proof",

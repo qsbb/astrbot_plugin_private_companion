@@ -140,16 +140,45 @@ class MigrationReplayWorker:
                     or admission.admitted_delta != payload.get("applied_delta")
                 ):
                     raise MigrationReplayError("migration_replay_group_admission_invalid")
-            result = self.relationship_store.replay_legacy_event(
-                context,
-                event_id=item.event_id,
-                reason_code=payload.get("reason_code"),
-                requested_delta=payload.get("requested_delta"),
-                applied_delta=payload.get("applied_delta"),
-                score_before=payload.get("score_before"),
-                score_after=payload.get("score_after"),
-                **common,
-            )
+            try:
+                result = self.relationship_store.replay_legacy_event(
+                    context,
+                    event_id=item.event_id,
+                    reason_code=payload.get("reason_code"),
+                    requested_delta=payload.get("requested_delta"),
+                    applied_delta=payload.get("applied_delta"),
+                    score_before=payload.get("score_before"),
+                    score_after=payload.get("score_after"),
+                    **common,
+                )
+            except RelationshipNotFound:
+                # A legacy event can reach the queue before its snapshot when the
+                # legacy ledger was written incrementally. The event payload
+                # carries the complete "before" account state (role, mode,
+                # score, daily totals, last effective time), so bootstrap the
+                # account from it and retry. This is not a guess: the replay
+                # precondition still has to match score_before exactly.
+                self.relationship_store.create_account(
+                    context,
+                    operation_id=f"{item.event_id}-bootstrap",
+                    actor="migration",
+                    relationship_role=common["relationship_role"],
+                    relationship_mode=common["relationship_mode"],
+                    score=payload.get("score_before"),
+                    positive_stage_cap_key=common["positive_stage_cap_key"],
+                    daily_totals=common["daily_totals"],
+                    last_effective_at=common["last_effective_at"],
+                )
+                result = self.relationship_store.replay_legacy_event(
+                    context,
+                    event_id=item.event_id,
+                    reason_code=payload.get("reason_code"),
+                    requested_delta=payload.get("requested_delta"),
+                    applied_delta=payload.get("applied_delta"),
+                    score_before=payload.get("score_before"),
+                    score_after=payload.get("score_after"),
+                    **common,
+                )
             if result.applied_delta != payload.get("applied_delta") or result.score != payload.get("score_after"):
                 raise MigrationReplayError("migration_replay_event_result_mismatch")
         elif operation == "relationship_legacy_snapshot":
