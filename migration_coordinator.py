@@ -28,6 +28,21 @@ COMPATIBILITY_KEYS = frozenset({
     "auto_profile_creation", "content_policy", "owner_policy", "private_access_policy",
     "proactive_policy", "relationship_policy", "tool_policy",
 })
+# Pause reasons that describe a *replay/apply* failure rather than an
+# integrity problem with the migration source. These can legitimately clear on
+# their own once the underlying code is fixed: the queue is replayed from the
+# durable outbox, and replay is idempotent, so retrying is safe. Integrity
+# reasons (backup/source changed) stay fail-closed and need a human.
+RECOVERABLE_PAUSE_REASONS = frozenset({
+    "relationship_legacy_event_invalid",
+    "migration_replay_failed",
+    "migration_replay_event_proof_mismatch",
+    "migration_replay_event_result_mismatch",
+    "migration_replay_identity_mismatch",
+    "migration_replay_stream_mismatch",
+    "migration_replay_group_admission_invalid",
+    "migration_reconcile_failed",
+})
 SOURCE_INVENTORY_KEYS = frozenset({
     "schema", "source_schema_version", "fingerprint", "source_count", "formats",
     "store_version", "section_schema_versions", "all_have_unified_person",
@@ -826,6 +841,30 @@ class MigrationCoordinator:
                 (float(self._clock()),),
             )
         return self.status()
+
+    def resume_if_recoverable(self) -> dict[str, Any]:
+        """Clear a replay-class pause so the durable queue can be retried.
+
+        The migration is intentionally fail-closed: a single bad outbox item
+        pauses the whole run so no partially applied state is trusted. That is
+        correct, but it also means a *code* defect leaves the migration paused
+        forever, because ``resume()`` had no caller anywhere in the tree and
+        ``_req041_initialize_automatic_migration`` returns early on ``paused``.
+
+        Only replay/apply failures are retried automatically, and only after
+        the verified backup still checks out. Integrity pauses (backup or
+        source files changed) remain fail-closed for a human to resolve.
+        """
+        status = self.status()
+        if status.get("state") != "paused":
+            return {"ok": False, "code": "migration_not_paused", "status": status}
+        reason = str(status.get("error_code") or "").strip()
+        if reason not in RECOVERABLE_PAUSE_REASONS:
+            return {"ok": False, "code": "migration_pause_not_recoverable", "reason": reason, "status": status}
+        if not self.verify_backup():
+            return {"ok": False, "code": "migration_backup_unverified", "status": status}
+        resumed = self.resume()
+        return {"ok": True, "code": "migration_replay_resumed", "reason": reason, "status": resumed}
 
     @staticmethod
     def _audit(connection: sqlite3.Connection, operation: str, identity_id: str, code: str) -> None:

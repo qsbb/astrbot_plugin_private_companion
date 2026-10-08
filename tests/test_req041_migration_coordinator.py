@@ -126,6 +126,48 @@ class MigrationCoordinatorTests(unittest.TestCase):
         with self.assertRaisesRegex(MigrationStateConflict, "migration_source_set_changed"):
             self._start(other, source_files=[other_source, added])
 
+    def test_recoverable_replay_pause_resumes_and_drains(self) -> None:
+        """A replay-class pause must clear so a fixed build can drain the queue."""
+        self._start()
+        self.coordinator.capture_compatibility({"relationship_policy": {"mode": "legacy"}})
+        for phase in ("S3", "S4", "S5", "S6"):
+            self.coordinator.transition(phase, checkpoint=phase.lower())
+        self.coordinator.pause("relationship_legacy_event_invalid")
+
+        result = self.coordinator.resume_if_recoverable()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("migration_replay_resumed", result["code"])
+        self.assertEqual("relationship_legacy_event_invalid", result["reason"])
+        self.assertEqual("replaying", self.coordinator.status()["state"])
+        self.assertEqual("", self.coordinator.status()["error_code"])
+
+    def test_integrity_pause_stays_fail_closed(self) -> None:
+        """Backup/source integrity pauses must not self-heal."""
+        self._start()
+        self.coordinator.pause("migration_source_set_changed")
+
+        result = self.coordinator.resume_if_recoverable()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("migration_pause_not_recoverable", result["code"])
+        self.assertEqual("paused", self.coordinator.status()["state"])
+
+    def test_recoverable_pause_still_requires_a_verified_backup(self) -> None:
+        status = self._start()
+        manifest = self.data_dir / status["backup_manifest"]
+        backup = manifest.parent / "files" / "companions.json"
+        backup.chmod(0o600)
+        backup.write_text("tampered", encoding="utf-8")
+        reopened = MigrationCoordinator(self.data_dir)
+        reopened.pause("relationship_legacy_event_invalid")
+
+        result = reopened.resume_if_recoverable()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("migration_backup_unverified", result["code"])
+        self.assertEqual("paused", reopened.status()["state"])
+
     def test_inventory_is_bound_to_manifest_and_resume_contract(self) -> None:
         inventory = self._inventory()
         status = self._start(source_inventory=inventory)

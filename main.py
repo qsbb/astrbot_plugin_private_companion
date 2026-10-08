@@ -8156,11 +8156,33 @@ class PrivateCompanionPlugin(
                 on_enqueued=self._req041_schedule_replay,
             )
             if status.get("state") == "paused":
-                self.req041_migration_status = {
-                    "required": True, "state": "paused", "code": status.get("error_code") or "migration_paused",
-                    "phase": status.get("phase", "S0"), "dual_write": "capturing_while_paused",
-                }
-                return
+                # A replay-class pause is retried automatically: it means one
+                # outbox item failed to apply, and replay is idempotent, so a
+                # fixed build can drain the durable queue. Integrity pauses
+                # (backup/source changed) stay fail-closed for a human.
+                resume_gate = getattr(coordinator, "resume_if_recoverable", None)
+                resume_result: dict[str, Any] = {"ok": False, "code": "resume_not_supported"}
+                if callable(resume_gate):
+                    try:
+                        resume_result = await asyncio.to_thread(resume_gate)
+                    except Exception as exc:
+                        resume_result = {
+                            "ok": False,
+                            "code": _single_line(exc, 120) or "migration_resume_failed",
+                        }
+                if not resume_result.get("ok"):
+                    self.req041_migration_status = {
+                        "required": True, "state": "paused", "code": status.get("error_code") or "migration_paused",
+                        "phase": status.get("phase", "S0"), "dual_write": "capturing_while_paused",
+                        "resume": resume_result,
+                    }
+                    return
+                logger.info(
+                    "[PrivateCompanion] REQ-041 迁移自可恢复暂停中继续: %s",
+                    _single_line(resume_result.get("reason"), 120),
+                )
+                status = coordinator.status()
+
             if status.get("phase") == "S2":
                 status = await asyncio.to_thread(coordinator.transition, "S3", checkpoint="durable_outbox_active")
 

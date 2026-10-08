@@ -569,6 +569,37 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("capturing_while_paused", restarted.req041_migration_status["dual_write"])
         self.assertIsInstance(restarted.req041_dual_write_producer, MigrationDualWriteProducer)
 
+    async def test_recoverable_pause_self_heals_on_restart(self) -> None:
+        """A replay-class pause must clear on restart and move the phase on.
+
+        Without this the migration stayed ``paused`` forever after a
+        replay-class failure, because ``resume()`` had no caller and startup
+        returned early on ``paused``.
+        """
+        first_host = self._host()
+        await first_host._req041_initialize_automatic_migration()
+        first_host.req041_migration_coordinator.pause("relationship_legacy_event_invalid")
+
+        restarted = self._host()
+        await restarted._req041_initialize_automatic_migration()
+
+        status = restarted.req041_migration_coordinator.status()
+        self.assertNotEqual("paused", status["state"])
+        self.assertEqual("", status["error_code"])
+        self.assertIn(status["phase"], {"S6", "S7", "S8", "S9"})
+
+    async def test_integrity_pause_survives_restart(self) -> None:
+        """Integrity pauses must NOT self-heal."""
+        first_host = self._host()
+        await first_host._req041_initialize_automatic_migration()
+        first_host.req041_migration_coordinator.pause("migration_source_set_changed")
+
+        restarted = self._host()
+        await restarted._req041_initialize_automatic_migration()
+
+        self.assertEqual("paused", restarted.req041_migration_status["state"])
+        self.assertEqual("capturing_while_paused", restarted.req041_migration_status["dual_write"])
+
     async def test_startup_backfills_only_explicitly_linked_legacy_user(self) -> None:
         host = self._host()
         registry = UnifiedPersonRegistry(host.data)
