@@ -2862,10 +2862,7 @@ class PrivateCompanionPlugin(
                 "ok": True, "state": "not_required", "code": "scoped_persona_erase_not_required",
             }
             synchronizer = getattr(self, "req041_scoped_projection_sync", None)
-            migration_status = getattr(self, "req041_migration_status", None)
-            if synchronizer is None and isinstance(migration_status, dict) and (
-                migration_status.get("required") or migration_status.get("scoped_required")
-            ):
+            if synchronizer is None and self._req041_persona_remote_cleanup_required():
                 return {"ok": False, "message": "人格分域清理暂不可用", "code": "scoped_persona_erase_unavailable"}
             if synchronizer is not None:
                 persona_ref = scoped_persona_ref(pid)
@@ -6425,7 +6422,7 @@ class PrivateCompanionPlugin(
             return {"ok": False, "code": "scoped_projection_not_initialized", "scopes": []}
         synchronizer.mark_dirty()
         async with self._data_lock:
-            snapshots = self._req041_legacy_snapshots_locked()
+            snapshots = await asyncio.to_thread(self._req041_legacy_snapshots_locked)
         results: list[dict[str, Any]] = []
         for source_scope, snapshot in snapshots:
             results.append(await asyncio.to_thread(
@@ -6953,6 +6950,40 @@ class PrivateCompanionPlugin(
                 return False
         return True
 
+    def _req041_persona_remote_cleanup_required(self) -> bool:
+        """Require remote cleanup only when this persona may have published scopes."""
+        status = getattr(self, "req041_migration_status", None)
+        if not isinstance(status, dict):
+            return False
+        was_bound = self._req041_memory_scope_was_bound()
+        if status.get("required"):
+            if status.get("memory_bound") or was_bound:
+                return True
+            coordinator = getattr(self, "req041_migration_coordinator", None)
+            status_getter = getattr(coordinator, "status", None)
+            if callable(status_getter):
+                try:
+                    control = status_getter()
+                except Exception:
+                    control = {}
+                if isinstance(control, dict) and control.get("memory_version") == "not-detected":
+                    return False
+            return True
+        if not status.get("scoped_required"):
+            return False
+        if status.get("memory_bound") or was_bound:
+            return True
+        coordinator = getattr(self, "req041_migration_coordinator", None)
+        status_getter = getattr(coordinator, "status", None)
+        if callable(status_getter):
+            try:
+                control = status_getter()
+            except Exception:
+                control = {}
+            if isinstance(control, dict) and control.get("source_schema_version") == "req041-fresh-v1":
+                return False
+        return True
+
     def _req041_erase_scoped_persona_data(
         self,
         persona_id: str,
@@ -6961,8 +6992,7 @@ class PrivateCompanionPlugin(
     ) -> dict[str, Any]:
         synchronizer = getattr(self, "req041_scoped_projection_sync", None)
         if synchronizer is None:
-            status = getattr(self, "req041_migration_status", None)
-            if isinstance(status, dict) and (status.get("required") or status.get("scoped_required")):
+            if self._req041_persona_remote_cleanup_required():
                 return {"ok": False, "state": "degraded", "code": "scoped_persona_erase_unavailable"}
             return {"ok": True, "state": "not_required", "code": "scoped_persona_erase_not_required"}
         persona_ref = scoped_persona_ref(persona_id)
@@ -8190,7 +8220,7 @@ class PrivateCompanionPlugin(
             if status.get("phase") in {"S3", "S4"}:
                 try:
                     async with self._data_lock:
-                        legacy_snapshots = self._req041_legacy_snapshots_locked()
+                        legacy_snapshots = await asyncio.to_thread(self._req041_legacy_snapshots_locked)
                     backfiller = await asyncio.to_thread(
                         MigrationBackfill,
                         coordinator=coordinator,

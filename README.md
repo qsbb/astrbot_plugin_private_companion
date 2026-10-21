@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > **插件正在进行大规模重构。** 当前正持续调整模块划分、提示词编排、数据存储与扩展接口，重构期间功能行为、配置和兼容性可能发生变化。升级前请备份插件配置与数据，并阅读更新日志；遇到问题请附上插件版本、相关日志和复现步骤。
 >
-> **V2 现状：** V2 正在独立工程中持续开发，已有自己的运行本体、陪伴小屋管理页，以及对话、身份、记忆、角色生活等部分链路；定向测试和单目标 staging 验证已覆盖其中一部分。可选能力仍有未完成接入项，完整真实环境验收尚未完成；V2 使用独立数据根，目前不读取或迁移 V1 用户数据。因此 V2 还不能直接替换本插件，**6.7.0 仍是现有 V1 发行线**。升级和安装请继续以本 README 与下方版本号为准。
+> **V2 现状：** V2（v7.0.0） 开发接近尾声，届时将替换v1仓库，近期pr与issues将于v2统一处理。v1用户在更新至7.0.0后需要于拓展页进行资料配置迁移工作，原v6.7.0将转移至备份仓库留档。
 
 <div align="center">
   <img src="./logo.png" alt="我会永远陪着你" width="180">
@@ -118,7 +118,7 @@ Proactive Chat 的深度联动如果遇到版本不兼容或缺少上游方法�
 - 按主题查阅契约、领域设计与参考：[设计主题目录](./docs/FRAMEWORK_DESIGN_INDEX.md)
 - 问题反馈：[GitHub Issues](https://github.com/menglimi/astrbot_plugin_private_companion/issues)
 - 版本记录：[CHANGELOG.md](./CHANGELOG.md)
-- 交流群：QQ 群 <code>1097283005</code>
+- 交流群：原 QQ 群 <code>1097283005</code> 被停用一周，期间可先加入 bot 群：<code>145326153</code>。
 - 开发者：<code>menglimi</code>
 - 自愿支持：[爱发电](https://ifdian.net/a/xuhaun)
 

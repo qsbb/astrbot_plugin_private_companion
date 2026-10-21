@@ -52,7 +52,7 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
         self.assertIn("function renderPersonaMaintenance()", script)
         self.assertIn("function currentPersonaMaintenanceTarget()", script)
         self.assertIn("const selected = currentPersonaMaintenanceTarget();", script)
-        self.assertGreaterEqual(html.count("maintenance=persona-reset-v1"), 2)
+        self.assertIn("maintenance=persona-reset-dialog-v2", html)
 
     def test_persona_selector_is_stateful_and_protects_drafts(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")

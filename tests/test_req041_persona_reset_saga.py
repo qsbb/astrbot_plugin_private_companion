@@ -49,6 +49,8 @@ def _load_methods(*names: str) -> dict[str, Any]:
 
 METHODS = _load_methods(
     "_reset_current_persona_store",
+    "_req041_persona_remote_cleanup_required",
+    "_req041_memory_scope_was_bound",
     "_req041_erase_scoped_persona_data",
     "_req041_persist_archive_saga_locked",
     "_req041_resume_confirmed_persona_resets",
@@ -77,6 +79,8 @@ class _Remote:
 
 class _Host:
     _reset_current_persona_store = METHODS["_reset_current_persona_store"]
+    _req041_persona_remote_cleanup_required = METHODS["_req041_persona_remote_cleanup_required"]
+    _req041_memory_scope_was_bound = METHODS["_req041_memory_scope_was_bound"]
     _req041_erase_scoped_persona_data = METHODS["_req041_erase_scoped_persona_data"]
     _req041_persist_archive_saga_locked = METHODS["_req041_persist_archive_saga_locked"]
     _req041_resume_confirmed_persona_resets = METHODS["_req041_resume_confirmed_persona_resets"]
@@ -101,6 +105,9 @@ class _Host:
         self._persona_window_claims: dict[str, str] = {}
         self._persona_window_conflicts: dict[str, Any] = {}
         self._bookshelf_access_tokens: dict[str, Any] = {}
+
+    def _req041_persist_archive_saga_locked(self, **_kwargs: Any) -> None:
+        self.persisted = deepcopy(self.data)
 
     @property
     def data(self) -> dict[str, Any]:
@@ -175,6 +182,38 @@ class _Host:
 
 
 class PersonaResetSagaTests(unittest.TestCase):
+    def test_local_reset_is_available_when_remote_scoped_cleanup_was_never_required(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            host = _Host(root)
+            host.req041_scoped_projection_sync = None
+            host.req041_migration_status = {"required": True, "scoped_required": True}
+            host.req041_migration_coordinator = type(
+                "Coordinator", (), {"status": lambda _self: {"memory_version": "not-detected"}}
+            )()
+
+            result = asyncio.run(host._reset_current_persona_store(rebuild_today=False))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual("scoped_persona_erase_not_required", result["scoped_cleanup"]["code"])
+            self.assertTrue(result["external_memory_preserved"])
+            self.assertEqual({}, host.data["users"])
+            self.assertTrue(Path(result["backup_path"]).is_file())
+
+    def test_local_reset_remains_blocked_after_remote_scope_was_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            host = _Host(root)
+            host.req041_scoped_projection_sync = None
+            host.req041_migration_status = {"required": False, "scoped_required": True}
+            host.data["_req041_memory_scope_state"] = {"ever_bound": True}
+            before = deepcopy(host.data)
+
+            result = asyncio.run(host._reset_current_persona_store(rebuild_today=False))
+
+            self.assertFalse(result["ok"])
+            self.assertEqual("scoped_persona_erase_unavailable", result["code"])
+            self.assertEqual(before, host.data)
+            self.assertEqual([], list(Path(root).glob("backup-*.json")))
+
     def test_empty_default_reset_marker_starts_new_operation(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             host = _Host(root)

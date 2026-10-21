@@ -400,8 +400,11 @@ def inspect_migration_sources(
         if candidate.is_symlink():
             raise MigrationSourceInspectionError("migration_source_file_invalid")
         try:
+            candidate.resolve(strict=False).relative_to(root)
             path = candidate.resolve(strict=True)
             path.relative_to(root)
+        except FileNotFoundError as exc:
+            raise MigrationSourceInspectionError("migration_source_file_missing") from exc
         except (OSError, ValueError) as exc:
             raise MigrationSourceInspectionError(
                 "migration_source_path_invalid"

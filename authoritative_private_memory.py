@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import wraps
 import hashlib
 import json
 import math
 import time
+from threading import RLock
 from typing import Any
 
 
@@ -36,6 +38,19 @@ PRIVATE_MEMORY_FIELDS = (
 _ROOT_KEY = "_req041_private_memory"
 _SCHEMA = "req041.person_private_memory.v1"
 _OPERATION_LOG_LIMIT = 32
+
+# A bounded process-local lock pool protects independent Store instances sharing
+# the same snapshot. Never put locks inside persisted user data or rely on an
+# instance lock: callers routinely construct a new Store for each operation.
+_SNAPSHOT_LOCKS = tuple(RLock() for _ in range(64))
+
+
+def _snapshot_locked(method):
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        with _SNAPSHOT_LOCKS[(id(self.snapshot) >> 4) % len(_SNAPSHOT_LOCKS)]:
+            return method(self, *args, **kwargs)
+    return guarded
 
 
 class AuthoritativePrivateMemoryError(RuntimeError):
@@ -198,6 +213,7 @@ class AuthoritativePrivateMemoryStore:
             raise AuthoritativePrivateMemoryError("private_memory_store_invalid")
         return root
 
+    @_snapshot_locked
     def read(self, person_id: str) -> dict[str, Any]:
         person = _token(person_id, 80)
         if not person:
@@ -249,6 +265,7 @@ class AuthoritativePrivateMemoryStore:
             )
         return {"ok": True, "code": "found", "record": deepcopy(raw)}
 
+    @_snapshot_locked
     def commit(
         self,
         person_id: str,
@@ -288,6 +305,10 @@ class AuthoritativePrivateMemoryStore:
         assert root is not None
         records = root["records"]
         current = records.get(person)
+        # A write must not silently bless corrupted pre-existing content by
+        # computing a fresh hash. Validate under the same snapshot lock first.
+        if current is not None:
+            self.read(person)
         current_revision = int(current.get("revision") or 0) if isinstance(current, dict) else 0
         # 1) Idempotency first: a replay of an accepted operation always wins, revision aside.
         operations = _operation_log(current)

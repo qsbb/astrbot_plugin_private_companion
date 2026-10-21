@@ -2140,6 +2140,7 @@ class WardrobeMixin:
         replaced: list[str] = []
         outfits_added: list[str] = []
         outfits_replaced: list[str] = []
+        understood_assets: list[str] = []
         failures: list[str] = []
         for path, label in images[:limit]:
             parsed, error = await self._wardrobe_describe_image(
@@ -2162,6 +2163,8 @@ class WardrobeMixin:
                     break
                 continue
             stored_name = str(outcome.get("name") or "")
+            if asset_id and asset_id not in understood_assets:
+                understood_assets.append(asset_id)
             if str(outcome.get("kind") or "") in (
                 WARDROBE_IMAGE_KIND_OUTFIT,
                 WARDROBE_IMAGE_KIND_REFERENCE,
@@ -2174,6 +2177,13 @@ class WardrobeMixin:
             return f"没有把衣物加入衣柜：{chr(10)}{detail}", ""
         if not await self._save_wardrobe_state(items=items, outfits=outfits):
             return "衣物已识别，但保存失败，请到面板确认配置是否可写。", ""
+        # A successful chat command already applied the recognized draft.
+        # Advance assets only after wardrobe persistence, just like panel review.
+        for asset_id in understood_assets:
+            try:
+                mark_asset_status(self.data_dir, asset_id, ASSET_STATUS_UNDERSTOOD)
+            except Exception as exc:
+                logger.warning("推进衣柜素材状态失败: %s", _single_line(exc, 160))
         lines = []
         if added:
             lines.append("已加入衣物：" + "、".join(added))

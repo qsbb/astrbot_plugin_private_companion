@@ -24,6 +24,7 @@ import time
 import unicodedata
 import uuid
 import zoneinfo
+from collections import OrderedDict
 from collections.abc import Collection, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
@@ -1567,6 +1568,12 @@ class CoreStoreMixin:
     @staticmethod
     def _store_path_is_raw_user_text(path: tuple[Any, ...]) -> bool:
         """Raw observations are evidence and must not be rewritten during persistence."""
+        # REQ-041 authoritative private memory carries a content_hash over its
+        # content. Rewriting any string here would invalidate that hash without
+        # recomputing it, and AuthoritativePrivateMemoryStore.read() then raises
+        # on every later read -- freezing the whole private memory layer.
+        if path and path[0] == "_req041_private_memory":
+            return True
         if "recent_phrases" in path:
             return True
         if len(path) >= 3 and path[0] == "memo_notes" and path[-1] in {"title", "content"}:
@@ -1582,38 +1589,53 @@ class CoreStoreMixin:
         """Remove leaked pseudo-control tags from persisted companion data."""
         if not bool(getattr(self, "enable_store_control_tag_sanitization", True)):
             return 0
-        changed = 0
-        if isinstance(value, dict):
-            for key, item in list(value.items()):
-                item_path = (*_path, key)
-                if isinstance(item, str):
-                    if self._store_path_is_raw_user_text(item_path):
-                        continue
-                    cleaned = _strip_persisted_chat_control_tags(
-                        item, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
-                    )
-                    if cleaned != item:
-                        value[key] = cleaned
-                        changed += 1
-                elif isinstance(item, (dict, list)):
-                    changed += self._sanitize_store_control_tags_inplace(item, item_path)
+        cleaned_texts: OrderedDict[tuple[str, bool], str] = OrderedDict()
+
+        def clean_text(item: str) -> str:
+            tts_enabled = bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+            if len(item) > 400:
+                return _strip_persisted_chat_control_tags(item, tts_enabled=tts_enabled)
+            key = (item, tts_enabled)
+            cached = cleaned_texts.get(key)
+            if cached is not None:
+                cleaned_texts.move_to_end(key)
+                return cached
+            cleaned = _strip_persisted_chat_control_tags(item, tts_enabled=tts_enabled)
+            if len(cleaned_texts) >= 30000:
+                cleaned_texts.popitem(last=False)
+            cleaned_texts[key] = cleaned
+            return cleaned
+
+        def walk(current: Any, path: tuple[Any, ...]) -> int:
+            changed = 0
+            if isinstance(current, dict):
+                for key, item in list(current.items()):
+                    item_path = (*path, key)
+                    if isinstance(item, str):
+                        if self._store_path_is_raw_user_text(item_path):
+                            continue
+                        cleaned = clean_text(item)
+                        if cleaned != item:
+                            current[key] = cleaned
+                            changed += 1
+                    elif isinstance(item, (dict, list)):
+                        changed += walk(item, item_path)
+                return changed
+            if isinstance(current, list):
+                for idx, item in enumerate(list(current)):
+                    item_path = (*path, idx)
+                    if isinstance(item, str):
+                        if self._store_path_is_raw_user_text(item_path):
+                            continue
+                        cleaned = clean_text(item)
+                        if cleaned != item:
+                            current[idx] = cleaned
+                            changed += 1
+                    elif isinstance(item, (dict, list)):
+                        changed += walk(item, item_path)
             return changed
-        if isinstance(value, list):
-            for idx, item in enumerate(list(value)):
-                item_path = (*_path, idx)
-                if isinstance(item, str):
-                    if self._store_path_is_raw_user_text(item_path):
-                        continue
-                    cleaned = _strip_persisted_chat_control_tags(
-                        item, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
-                    )
-                    if cleaned != item:
-                        value[idx] = cleaned
-                        changed += 1
-                elif isinstance(item, (dict, list)):
-                    changed += self._sanitize_store_control_tags_inplace(item, item_path)
-            return changed
-        return 0
+
+        return walk(value, _path)
 
     def _log_store_control_cleanup(self, stage: str, changed: int, *, cooldown_seconds: float = 600.0) -> bool:
         if changed <= 0:

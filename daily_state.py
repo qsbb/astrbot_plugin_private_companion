@@ -16512,23 +16512,23 @@ class DailyStateMixin(DailyStateTickMixin):
                     declared.update(aliases)
         return declared
 
-    def _daily_plan_undeclared_relationship_tokens(self, text: Any) -> list[str]:
+    def _daily_plan_undeclared_relationship_tokens(
+        self, text: Any, *, relationship_context: Any = None
+    ) -> list[str]:
         source = self._mask_non_relationship_phrases(text)
         if not source:
             return []
-        declared = self._daily_plan_declared_relation_tokens()
         hits: list[str] = []
-        identity_bound_groups = self._daily_plan_identity_bound_relationship_groups()
-        all_aliases = sorted(
-            {
-                alias
-                for group in self._daily_plan_relationship_alias_groups()
-                if group[0] in identity_bound_groups
-                for alias in group
-            },
-            key=len,
-            reverse=True,
-        )
+        if relationship_context is None:
+            declared = self._daily_plan_declared_relation_tokens()
+            identity_bound_groups = self._daily_plan_identity_bound_relationship_groups()
+            all_aliases = sorted(
+                {alias for group in self._daily_plan_relationship_alias_groups()
+                 if group[0] in identity_bound_groups for alias in group},
+                key=len, reverse=True,
+            )
+        else:
+            declared, all_aliases = relationship_context
         for alias in all_aliases:
             if alias not in declared and alias in source:
                 hits.append(alias)
@@ -16582,12 +16582,15 @@ class DailyStateMixin(DailyStateTickMixin):
         *,
         source: str = "",
         max_chars: int = 0,
+        relationship_context: Any = None,
     ) -> str:
         """Remove undeclared relationship clauses before they reach a generator."""
         raw = str(text or "").strip()
         if not raw:
             return ""
-        initial_hits = self._daily_plan_undeclared_relationship_tokens(raw)
+        initial_hits = self._daily_plan_undeclared_relationship_tokens(
+            raw, relationship_context=relationship_context
+        )
         if not initial_hits:
             return raw[:max_chars] if max_chars > 0 else raw
 
@@ -16606,7 +16609,9 @@ class DailyStateMixin(DailyStateTickMixin):
                 separator = pieces[index + 1] if index + 1 < len(pieces) else ""
                 if not clause:
                     continue
-                clause_hits = self._daily_plan_undeclared_relationship_tokens(clause)
+                clause_hits = self._daily_plan_undeclared_relationship_tokens(
+                    clause, relationship_context=relationship_context
+                )
                 if clause_hits and not self._relationship_clause_is_explicitly_user_owned(clause, clause_hits):
                     removed_any = True
                     continue
@@ -17018,7 +17023,21 @@ class DailyStateMixin(DailyStateTickMixin):
                 changed = True
         return changed
 
-    def _sanitize_relationship_text_tree_inplace(self, value: Any, *, field: str) -> bool:
+    def _sanitize_relationship_text_tree_inplace(
+        self, value: Any, *, field: str, relationship_context: Any = None
+    ) -> bool:
+        # Snapshot persona-dependent facts once per traversal, never on self.
+        # Recursive string leaves reuse this immutable, invocation-local view.
+        if relationship_context is None:
+            identity_bound = self._daily_plan_identity_bound_relationship_groups()
+            relationship_context = (
+                frozenset(self._daily_plan_declared_relation_tokens()),
+                tuple(sorted(
+                    {alias for group in self._daily_plan_relationship_alias_groups()
+                     if group[0] in identity_bound for alias in group},
+                    key=len, reverse=True,
+                )),
+            )
         changed = False
         if isinstance(value, dict):
             for key, item in list(value.items()):
@@ -17034,13 +17053,16 @@ class DailyStateMixin(DailyStateTickMixin):
                 }:
                     continue
                 if isinstance(item, str):
-                    cleaned = self._sanitize_generation_relationship_context(item, source=item_field)
+                    cleaned = self._sanitize_generation_relationship_context(
+                        item, source=item_field, relationship_context=relationship_context
+                    )
                     if cleaned != item:
                         value[key] = cleaned
                         changed = True
                 elif isinstance(item, (dict, list)) and self._sanitize_relationship_text_tree_inplace(
                     item,
                     field=item_field,
+                    relationship_context=relationship_context,
                 ):
                     changed = True
             return changed
@@ -17049,7 +17071,9 @@ class DailyStateMixin(DailyStateTickMixin):
             for index, item in enumerate(value):
                 item_field = f"{field}.{index}" if field else str(index)
                 if isinstance(item, str):
-                    cleaned = self._sanitize_generation_relationship_context(item, source=item_field)
+                    cleaned = self._sanitize_generation_relationship_context(
+                        item, source=item_field, relationship_context=relationship_context
+                    )
                     if cleaned != item:
                         changed = True
                     if cleaned:
@@ -17058,6 +17082,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     if isinstance(item, (dict, list)) and self._sanitize_relationship_text_tree_inplace(
                         item,
                         field=item_field,
+                        relationship_context=relationship_context,
                     ):
                         changed = True
                     rebuilt.append(item)

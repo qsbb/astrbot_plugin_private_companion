@@ -568,10 +568,23 @@ class GroupObservationMixin:
         raw_getter = getattr(self, "_event_raw_payload", None)
         raw = raw_getter(event) if callable(raw_getter) else getattr(message_obj, "raw_message", None)
         raw = raw if isinstance(raw, dict) else {}
-        sources = [raw.get("sender"), getattr(message_obj, "sender", None), raw]
+        # QQ 官方通道：raw_message 是 botpy 对象（不是 dict），角色只在原始载荷里：
+        # raw_data.author.member_role（member / admin / owner）
+        official_author = None
+        raw_data = getattr(getattr(message_obj, "raw_message", None), "raw_data", None)
+        if isinstance(raw_data, dict) and isinstance(raw_data.get("author"), dict):
+            official_author = raw_data["author"]
+        sources = [
+            raw.get("sender"),
+            getattr(message_obj, "sender", None),
+            official_author,
+            raw,
+        ]
         for source in sources:
             role = self._normalize_group_member_role(
-                self._group_role_source_value(source, "role", "user_role", "group_role", "permission")
+                self._group_role_source_value(
+                    source, "role", "user_role", "group_role", "permission", "member_role"
+                )
             )
             if role != "unknown":
                 return role

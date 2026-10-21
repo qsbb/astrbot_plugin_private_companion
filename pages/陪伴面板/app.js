@@ -25510,14 +25510,46 @@ function moduleWorkbenchCard(item) {
   `;
 }
 
+function confirmPersonaReset(label) {
+  // AstrBot plugin Pages disallow window.confirm() in their iframe sandbox.
+  // A document dialog preserves explicit confirmation without allow-modals.
+  return new Promise((resolve, reject) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "pc-dialog";
+    dialog.setAttribute("aria-labelledby", "personaResetDialogTitle");
+    dialog.innerHTML = `
+      <form method="dialog" class="stack-form">
+        <header><h3 id="personaResetDialogTitle">重置当前人格资料</h3></header>
+        <p>确定重置当前查看人格“<b>${escapeHtml(label)}</b>”的全部本地数据吗？</p>
+        <p>重置前会自动备份本地人格资料；插件基础配置、人格独立设置、多人格列表和 AstrBot 路由状态会保留。</p>
+        <p>同步到 MemoryCompanion 的当前人格分域投影会一并清理；AstrBot 会话历史与其他长期记忆不受影响。</p>
+        <footer>
+          <button type="submit" class="secondary-button" value="cancel" autofocus>取消</button>
+          <button type="submit" class="danger-outline" value="confirm">备份并重置</button>
+        </footer>
+      </form>
+    `;
+    dialog.addEventListener("close", () => {
+      const confirmed = dialog.returnValue === "confirm";
+      dialog.remove();
+      resolve(confirmed);
+    }, { once: true });
+    document.body.appendChild(dialog);
+    try {
+      dialog.showModal();
+    } catch (error) {
+      dialog.remove();
+      reject(error);
+    }
+  });
+}
+
 async function resetPersonaFromPanel(button, personaId, label) {
-  const confirmed = window.confirm(
-    `确定重置当前查看人格“${label}”的全部本地数据吗？\n\n重置前会自动备份本地人格资料；插件基础配置、人格独立设置、多人格列表和 AstrBot 路由状态会保留。同步到 MemoryCompanion 的当前人格分域投影会一并清理；AstrBot 会话历史与其他长期记忆不受影响。`,
-  );
-  if (!confirmed) return;
+  if (!button || button.disabled || Number(state.personaOperationBusyCount || 0) > 0) return;
   setPersonaOperationBusy(true);
   button.disabled = true;
   try {
+    if (!await confirmPersonaReset(label)) return;
     const result = await postJson("/persona/reset-current", { persona_id: personaId });
     setBookshelfUnlocked(null);
     state.bookshelfAccessToken = "";

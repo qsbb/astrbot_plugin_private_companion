@@ -103,6 +103,35 @@ class StoreCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["groups"]["10001"]["recent_messages"][0]["text"], raw)
         self.assertEqual(data["groups"]["10001"]["members"]["20002"]["recent_phrases"][0], raw)
 
+    def test_store_sanitization_caches_short_text_only_during_each_walk(self) -> None:
+        harness = _ControlTagSanitizerHarness(True)
+        harness.enable_tts_enhancement = False
+        short = "模型输出 <pc_bubble/> 需要清理"
+        long = "重复内容" * 101 + " <pc_bubble/>"
+        data = {"entries": [short, short, long, long]}
+        expected_short = core_store._strip_persisted_chat_control_tags(short, tts_enabled=False)
+        expected_long = core_store._strip_persisted_chat_control_tags(long, tts_enabled=False)
+
+        with patch.object(
+            core_store,
+            "_strip_persisted_chat_control_tags",
+            wraps=core_store._strip_persisted_chat_control_tags,
+        ) as sanitizer:
+            changed = harness._sanitize_store_control_tags_inplace(data)
+
+        self.assertEqual(4, changed)
+        self.assertEqual(3, sanitizer.call_count)
+        self.assertEqual([expected_short, expected_short, expected_long, expected_long], data["entries"])
+
+        repeated = {"entries": [short, short]}
+        with patch.object(
+            core_store,
+            "_strip_persisted_chat_control_tags",
+            wraps=core_store._strip_persisted_chat_control_tags,
+        ) as sanitizer:
+            harness._sanitize_store_control_tags_inplace(repeated)
+        self.assertEqual(1, sanitizer.call_count)
+
     async def test_snapshot_cleanup_updates_live_data_without_full_followup_write(self) -> None:
         harness = _CanonicalSanitizeHarness({"memory": {"text": "残留 <bubble/> 内容"}})
 

@@ -499,7 +499,7 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
     async def test_sync_json_save_keeps_full_file_replacement_but_dirty_scope(self) -> None:
         harness = _WriterHarness(
             {
-                "users": {"owner": {"summary": "clean <bubble/> me"}},
+                "users": {"owner": {"summary": "clean <pc_bubble/> me"}},
                 "groups": {"room": {"summary": "keep <bubble/> raw"}},
             },
             backend="json",
@@ -510,9 +510,9 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(harness.store_manager.section_writes)
         self.assertEqual(1, len(harness.store_manager.snapshot_writes))
         snapshot = harness.store_manager.snapshot_writes[0]
-        self.assertNotIn("<bubble/>", snapshot["users"]["owner"]["summary"])
+        self.assertNotIn("<pc_bubble/>", snapshot["users"]["owner"]["summary"])
         self.assertIn("<bubble/>", snapshot["groups"]["room"]["summary"])
-        self.assertNotIn("<bubble/>", harness.data["users"]["owner"]["summary"])
+        self.assertNotIn("<pc_bubble/>", harness.data["users"]["owner"]["summary"])
         self.assertIn("<bubble/>", harness.data["groups"]["room"]["summary"])
 
     async def test_writer_keeps_newer_same_section_revision_for_second_batch(
@@ -795,7 +795,7 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
     async def test_json_writes_full_file_but_sanitizes_only_dirty_roots(self) -> None:
         harness = _WriterHarness(
             {
-                "users": {"owner": {"summary": "clean <bubble/> me"}},
+                "users": {"owner": {"summary": "clean <pc_bubble/> me"}},
                 "groups": {"room": {"summary": "leave <bubble/> alone"}},
             },
             backend="json",
@@ -807,9 +807,9 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([("users",)], harness.sanitized_roots)
         snapshot = harness.store_manager.snapshot_writes[0]
-        self.assertNotIn("<bubble/>", snapshot["users"]["owner"]["summary"])
+        self.assertNotIn("<pc_bubble/>", snapshot["users"]["owner"]["summary"])
         self.assertIn("<bubble/>", snapshot["groups"]["room"]["summary"])
-        self.assertNotIn("<bubble/>", harness.data["users"]["owner"]["summary"])
+        self.assertNotIn("<pc_bubble/>", harness.data["users"]["owner"]["summary"])
         self.assertIn("<bubble/>", harness.data["groups"]["room"]["summary"])
         self.assertIs(users_identity, harness.data["users"])
 
@@ -874,7 +874,7 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         harness = _WriterHarness(
-            {"users": {"owner": {"summary": "old<bubble/>"}}},
+            {"users": {"owner": {"summary": "old<pc_bubble/>"}}},
             backend="json",
         )
         first_started, first_release = harness.store_manager.block_snapshot_attempt(1)
@@ -882,12 +882,12 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
 
         harness._schedule_data_save(sections={"users"}, delay=0.0)
         await asyncio.wait_for(first_started.wait(), timeout=0.5)
-        harness.data["users"]["owner"]["summary"] = "latest<bubble/>"
+        harness.data["users"]["owner"]["summary"] = "latest<pc_bubble/>"
         harness._schedule_data_save(sections={"users"}, delay=0.0)
         first_release.set()
         await asyncio.wait_for(second_started.wait(), timeout=0.5)
 
-        self.assertEqual("latest<bubble/>", harness.data["users"]["owner"]["summary"])
+        self.assertEqual("latest<pc_bubble/>", harness.data["users"]["owner"]["summary"])
         second_release.set()
         await asyncio.wait_for(harness._flush_scheduled_data_save(), timeout=1.0)
         self.assertEqual("latest", harness.data["users"]["owner"]["summary"])
@@ -963,7 +963,7 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
     async def test_persona_full_file_sanitizes_only_dirty_root(self) -> None:
         harness = _PersonaWriterHarness()
         harness._persona_data_profiles["main"] = {
-            "users": {"owner": {"summary": "clean <bubble/> me"}},
+            "users": {"owner": {"summary": "clean <pc_bubble/> me"}},
             "groups": {"room": {"summary": "keep <bubble/> raw"}},
         }
         harness.activate("main")
@@ -975,10 +975,10 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
         saved = next(
             data for persona, data in harness.persona_writes if persona == "main"
         )
-        self.assertNotIn("<bubble/>", saved["users"]["owner"]["summary"])
+        self.assertNotIn("<pc_bubble/>", saved["users"]["owner"]["summary"])
         self.assertIn("<bubble/>", saved["groups"]["room"]["summary"])
         self.assertNotIn(
-            "<bubble/>",
+            "<pc_bubble/>",
             harness._persona_data_profiles["main"]["users"]["owner"]["summary"],
         )
 

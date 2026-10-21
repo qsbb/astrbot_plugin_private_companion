@@ -44,6 +44,31 @@ jobs:
       - name: Run contract and migration suite
         run: python -m pytest -q tests/test_content_story_negotiation.py tests/test_migration_transaction.py tests/test_runtime_config_dispatcher.py tests/test_mro_duplicate_guard.py tests/test_req041_persona_reset_saga.py tests/test_req041_scoped_projection.py
 
+  pending-runtime-regressions:
+    runs-on: ubuntu-latest
+    env:
+      ASTRBOT_CI_STUBS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install test runner
+        run: python -m pip install pytest pytest-asyncio
+      - name: Run pending runtime issue regressions
+        run: >-
+          python -m pytest -q
+          tests/test_private_memory_thread_safety.py
+          tests/test_relationship_cleanup_efficiency.py
+          tests/test_migration_missing_frozen_source.py
+          tests/test_wardrobe_command_asset_status.py
+          tests/test_req041_private_memory_persistence.py
+          tests/test_persona_reset_ui.py
+          tests/test_multi_persona_config_ui.py
+
   architecture-and-artifact:
     runs-on: ubuntu-latest
     steps:
@@ -58,12 +83,22 @@ jobs:
           python scripts/ci_static_checks.py
           --package astrbot_plugin_private_companion
           --import-module story_migration_contract
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test persona reset confirmation in the panel
+        run: |
+          python -m unittest discover -s tests -p 'test_persona_reset_ui.py' -v
+          python -m unittest discover -s tests -p 'test_multi_persona_config_ui.py' -v
       - name: Check patch whitespace
         shell: bash
         run: |
           base="${{ github.event.pull_request.base.sha || github.event.before }}"
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base="$(git rev-parse HEAD^ 2>/dev/null || true)"
+            base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+            if [[ -z "$base" ]]; then
+              base="$(git rev-parse HEAD^ 2>/dev/null || true)"
+            fi
           fi
           if [[ -n "$base" ]]; then
             git diff --check "$base" HEAD

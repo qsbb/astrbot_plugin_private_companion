@@ -225,5 +225,48 @@ class GroupRoleAwarenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(_PermissionHarness(time.time() - 25 * 3600)._is_group_admin_event(event))
 
 
+class OfficialChannelGroupRoleTests(unittest.TestCase):
+    """QQ 官方通道：角色只在原始载荷 raw_data.author.member_role 里。
+
+    官方通道下 message_obj.raw_message 是 botpy 的消息对象（不是 dict），
+    角色字段（member / admin / owner）只在 raw_data 中；此前该路径恒返回 unknown。
+    """
+
+    @staticmethod
+    def _official_event(member_role: str | None):
+        author = {"member_role": member_role} if member_role is not None else {}
+        return SimpleNamespace(
+            message_obj=SimpleNamespace(
+                raw_message=SimpleNamespace(raw_data={"author": author}),
+                sender=SimpleNamespace(nickname="官方昵称"),
+            )
+        )
+
+    def test_official_payload_roles(self) -> None:
+        harness = _RoleHarness()
+        for member_role, expected in (("owner", "owner"), ("admin", "admin"), ("member", "member")):
+            with self.subTest(member_role=member_role):
+                self.assertEqual(
+                    expected,
+                    harness._group_sender_role_from_event(self._official_event(member_role)),
+                )
+
+    def test_official_payload_without_role_is_unknown(self) -> None:
+        harness = _RoleHarness()
+        self.assertEqual("unknown", harness._group_sender_role_from_event(self._official_event(None)))
+
+    def test_onebot_dict_payload_still_works(self) -> None:
+        harness = _RoleHarness()
+        event = SimpleNamespace(message_obj=SimpleNamespace(raw_message={"sender": {"role": "admin"}}))
+        self.assertEqual("admin", harness._group_sender_role_from_event(event))
+
+    def test_observation_writes_observed_roles(self) -> None:
+        harness = _RoleHarness()
+        group = harness._get_group("group-1")
+        harness._observe_group_role_from_event(
+            group, self._official_event("admin"), sender_id="admin-1", sender_name="管理甲"
+        )
+        self.assertEqual("admin", group["role_snapshot"]["observed_roles"]["admin-1"]["role"])
+
 if __name__ == "__main__":
     unittest.main()

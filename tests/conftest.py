@@ -71,7 +71,15 @@ if PACKAGE_NAME not in sys.modules:
 
 
 if os.environ.get("ASTRBOT_CI_STUBS") == "1" and "astrbot" not in sys.modules:
-    class _Dummy:
+    class _DummyMeta(type):
+        def __getattr__(cls, _name):
+            return cls
+
+
+    class _Dummy(metaclass=_DummyMeta):
+        def __init__(self, *_args, **_kwargs):
+            pass
+
         def __call__(self, *_args, **_kwargs):
             return self
 
@@ -130,6 +138,35 @@ if os.environ.get("ASTRBOT_CI_STUBS") == "1" and "astrbot" not in sys.modules:
     quart = _module("quart")
     quart.request = _Dummy()
     quart.send_file = _Dummy()
+
+    # These regression harnesses execute real mixin methods, but only need
+    # import-time framework names. Keep this opt-in and do not stub plugin code.
+    api.AstrBotConfig = _Dummy
+    core.file_token_service = _Dummy()
+    exports = {
+        "astrbot.api.message_components": ("At", "Image", "Plain", "Record", "Reply"),
+        "astrbot.api.provider": ("ProviderRequest",),
+        "astrbot.api.star": ("Context", "Star", "StarTools", "register"),
+        "astrbot.core.astr_main_agent": ("MainAgentBuildConfig", "build_main_agent"),
+        "astrbot.core.agent.message": ("AssistantMessageSegment", "TextPart", "UserMessageSegment"),
+        "astrbot.core.db.po": ("Conversation",),
+        "astrbot.core.platform.astrbot_message": ("AstrBotMessage", "MessageMember"),
+        "astrbot.core.platform.message_session": ("MessageSession",),
+        "astrbot.core.platform.message_type": ("MessageType",),
+        "astrbot.core.platform.platform": ("PlatformStatus",),
+        "astrbot.core.platform.platform_metadata": ("PlatformMetadata",),
+        "astrbot.core.star.star_handler": ("EventType", "star_handlers_registry"),
+        "astrbot.core.provider.entities": ("LLMResponse",),
+    }
+    for module_name, names in exports.items():
+        parts = module_name.split(".")
+        for depth in range(2, len(parts) + 1):
+            qualified = ".".join(parts[:depth])
+            if qualified not in sys.modules:
+                child = _module(qualified, package=depth < len(parts))
+                setattr(sys.modules[".".join(parts[:depth - 1])], parts[depth - 1], child)
+        for name in names:
+            setattr(sys.modules[module_name], name, _Dummy)
 
 
 _HAS_PYTEST_ASYNCIO = importlib.util.find_spec("pytest_asyncio") is not None

@@ -268,8 +268,11 @@ class MigrationCoordinator:
             if candidate.is_symlink():
                 raise MigrationPreflightError("migration_source_file_invalid")
             try:
+                candidate.resolve(strict=False).relative_to(self.data_dir)
                 resolved = candidate.resolve(strict=True)
                 resolved.relative_to(self.data_dir)
+            except FileNotFoundError as exc:
+                raise MigrationPreflightError("migration_source_file_missing") from exc
             except (OSError, ValueError) as exc:
                 raise MigrationPreflightError("migration_source_path_invalid") from exc
             if (
