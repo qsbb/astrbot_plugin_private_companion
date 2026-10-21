@@ -256,7 +256,11 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
             def sync_snapshot(self, snapshot, *, source_scope):
                 return {"ok": True, "records": len(snapshot), "errors": 0}
 
-        host._data_default = _ThreadRecordingDict({"users": {}})
+        # This fork projects the legacy store down to the fields the scoped
+        # runtime actually reads (see _req041_projection_snapshot) before
+        # copying, so the recorder is the nested store that still gets
+        # deep-copied off the event loop.
+        host._data_default = {"users": _ThreadRecordingDict({})}
         host.data = host._data_default
         host.req041_scoped_projection_sync = _Synchronizer()
 
